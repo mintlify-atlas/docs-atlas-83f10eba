@@ -1,0 +1,169 @@
+---
+title: "Embedding the widget"
+description: "Add the Barrett AI chat widget to any internal web page with a few lines of HTML."
+---
+
+The Barrett AI widget is a self-contained JavaScript file that attaches itself to `document.body` automatically. You do not need to add any container element to your HTML — the widget creates and injects its own DOM structure on load.
+
+## Prerequisites
+
+<CardGroup cols={2}>
+  <Card title="Barrett AI server running" icon="server">
+    The FastAPI backend must be accessible on the network at the configured IP address and port before embedding the widget.
+  </Card>
+  <Card title="Network access" icon="network-wired">
+    The page embedding the widget must be able to reach the backend host. The widget makes fetch requests directly from the browser.
+  </Card>
+</CardGroup>
+
+## Configure the backend address
+
+Before embedding, open `chatbot.js` and set the IP address and port of your Barrett AI server at the top of the file:
+
+```javascript chatbot.js
+const ip_address = "10.10.10.10";
+const backend_port = "81";
+var s = `http://${ip_address}:${backend_port}`;
+const logoURL = `http://${s}/static/logo.png`;
+```
+
+<Warning>
+  Every browser that loads the page must be able to reach `http://10.10.10.10:81`. Update `ip_address` and `backend_port` to match your deployment before distributing the file.
+</Warning>
+
+## Required dependencies
+
+The widget depends on three external resources. Add them to every page that embeds the chatbot.
+
+| Resource | Purpose |
+|---|---|
+| Font Awesome 6.5.0 | Button and UI icons |
+| Font Awesome 6.0.0-beta3 | Additional icon fallback |
+| marked.min.js | Renders AI responses as Markdown |
+
+## Embed the widget
+
+<Steps>
+  <Step title="Add stylesheets to the &lt;head&gt;">
+    Place both Font Awesome `<link>` tags inside `<head>`:
+
+    ```html
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"
+      integrity="sha512-..."
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    />
+    <link
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"
+      rel="stylesheet"
+    />
+    ```
+  </Step>
+  <Step title="Add scripts before &lt;/body&gt;">
+    Place `marked.min.js` and `chatbot.js` just before the closing `</body>` tag. `chatbot.js` must come after `marked` because it calls `marked.parse()` when rendering AI responses.
+
+    ```html
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="chatbot.js"></script>
+    ```
+  </Step>
+  <Step title="Verify the static asset">
+    The widget loads the chatbot avatar from `static/logo.png` on the backend server. Confirm that `static/logo.png` exists and is served by FastAPI before going live.
+  </Step>
+</Steps>
+
+## Complete minimal HTML example
+
+```html index.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Internal IT Portal</title>
+
+  <!-- Font Awesome (required for widget icons) -->
+  <link
+    rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"
+    crossorigin="anonymous"
+    referrerpolicy="no-referrer"
+  />
+  <link
+    href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"
+    rel="stylesheet"
+  />
+</head>
+<body>
+
+  <!-- Your existing page content -->
+  <h1>IT Helpdesk Portal</h1>
+
+  <!-- Barrett AI widget dependencies — place just before </body> -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="chatbot.js"></script>
+
+</body>
+</html>
+```
+
+<Note>
+  You do not need to add a `<div>` or any other placeholder element. The widget appends its own floating button and chat panel directly to `document.body` when the script runs.
+</Note>
+
+## Session lifecycle
+
+Understanding the session model helps you anticipate widget behavior across page loads.
+
+### Session initialization
+
+A new session ID is generated each time the page loads:
+
+```javascript chatbot.js
+session_id = "session_" + Math.random().toString(36).slice(2, 9);
+```
+
+The session ID is also written to `localStorage` so it can be read during the unload event.
+
+### Session reset on page unload
+
+When the user navigates away or closes the tab, the widget sends a reset request to the backend:
+
+```javascript chatbot.js
+window.addEventListener("beforeunload", () => {
+    fetch("/reset-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: localStorage.getItem("session_id") }),
+    });
+});
+```
+
+This clears the conversation history on the server so returning users start fresh.
+
+### Inactivity timeout
+
+If the user is inactive for 3 minutes, the session is reset automatically and the input field is disabled:
+
+```javascript chatbot.js
+sessionTimer = setTimeout(async () => {
+    const res = await fetch(`${s}/reset-session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: session_id }),
+    });
+    if (res.ok) {
+        v.disabled = true;
+        b.disabled = true;
+        v.placeholder = "Session expired. Refresh page to start new chat.";
+    }
+}, 3 * 60 * 1000);
+```
+
+Activity events that reset the timer: `click`, `keydown`, `mousemove`.
+
+<Info>
+  The 3-minute timeout is configured in both `chatbot.js` and the Python backend. To change the duration, update both locations. See [Customizing the widget](/widget/customization) for details.
+</Info>

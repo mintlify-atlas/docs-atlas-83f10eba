@@ -1,0 +1,111 @@
+---
+title: "Unit tests"
+description: "Run the Barrett AI test suite to verify all endpoints behave correctly."
+---
+
+The test suite covers every HTTP endpoint in `chatbot.py` using pytest and FastAPI's built-in `TestClient`. Tests run against an in-process ASGI app — no running server is required.
+
+## Dependencies
+
+Install the test dependencies before running the suite:
+
+```bash
+pip install pytest httpx
+```
+
+`httpx` is required by FastAPI's `TestClient`. Both packages are for testing only and are not needed in production.
+
+## Running the tests
+
+```bash
+pytest test_app.py -v
+```
+
+The `-v` flag prints each test name and its result. Drop it for a compact summary.
+
+## Fixtures
+
+### `patch_get_client_ip` (autouse)
+
+All tests automatically use a monkeypatch fixture that replaces the `get_client_ip` function with a stub returning `192.168.100.100`. This prevents tests from making real network calls to resolve the client IP and keeps results deterministic.
+
+```python
+@pytest.fixture(autouse=True)
+def patch_get_client_ip(monkeypatch):
+    import chatbot
+    def fake_get_client_ip(_):
+        return DUMMY_IP
+    monkeypatch.setattr(chatbot, "get_client_ip", fake_get_client_ip)
+```
+
+Because `autouse=True` is set, every test function in the module receives this patch without declaring it explicitly.
+
+## Test reference
+
+| Test function | Endpoint | What it verifies |
+|---|---|---|
+| `test_index` | `GET /` | Returns HTTP 200 with `status: "ok"`, `ip`, and `host` fields |
+| `test_check_ip` | `GET /check-ip` | Returns the mocked IP and an `already_stored` boolean |
+| `test_store_ip` | `POST /store-ip` | Stores an IP and returns `status` of `"success"` or `"already_stored"` |
+| `test_store_ip_missing` | `POST /store-ip` | Empty body returns HTTP 400 with `"IP address is required"` |
+| `test_reset_session` | `POST /reset-session` | Clears an existing session from `session_memory_store`, returns `status: "success"` |
+| `test_reset_session_missing_id` | `POST /reset-session` | Missing `session_id` returns HTTP 400 |
+| `test_chat_first_message_name` | `POST /chat` | First message in a session sets `is_first_message: true` and returns a response |
+| `test_chat_greeting_asks_name` | `POST /chat` | Greetings (`hello`, `hi`, `hey`, `aoa`, `salaam`) return `"Please tell me your name."` |
+| `test_chat_second_message` | `POST /chat` | Second message after the name introduction returns HTTP 200 |
+| `test_chat_invalid_content_type` | `POST /chat` | `text/plain` content-type returns HTTP 400 with `"Content-Type must be application/json"` |
+| `test_chat_missing_fields` | `POST /chat` | Empty JSON body returns HTTP 400 with `"Missing session_id or message"` |
+
+## Example: greeting detection
+
+The greeting test iterates over all recognized openers and asserts each one triggers the name prompt:
+
+```python
+def test_chat_greeting_asks_name():
+    for greeting in ["hello", "hi", "hey", "aoa", "salaam"]:
+        response = client.post(
+            "/chat", json={"session_id": "new-session", "message": greeting}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["is_first_message"] is True
+        assert data["response"] == "Please tell me your name."
+```
+
+## Example output
+
+```
+============================================================= test session starts ==============================================================
+platform linux -- Python 3.11.x, pytest-8.x.x, pluggy-1.x.x
+collected 11 items
+
+test_app.py::test_index PASSED                                                                                                           [  9%]
+test_app.py::test_check_ip PASSED                                                                                                        [ 18%]
+test_app.py::test_store_ip PASSED                                                                                                        [ 27%]
+test_app.py::test_store_ip_missing PASSED                                                                                                [ 36%]
+test_app.py::test_reset_session PASSED                                                                                                   [ 45%]
+test_app.py::test_reset_session_missing_id PASSED                                                                                       [ 54%]
+test_app.py::test_chat_first_message_name PASSED                                                                                        [ 63%]
+test_app.py::test_chat_greeting_asks_name PASSED                                                                                        [ 72%]
+test_app.py::test_chat_second_message PASSED                                                                                            [ 81%]
+test_app.py::test_chat_invalid_content_type PASSED                                                                                      [ 90%]
+test_app.py::test_chat_missing_fields PASSED                                                                                            [100%]
+
+============================================================== 11 passed in 2.34s ==============================================================
+```
+
+## Session isolation
+
+<Warning>
+Several tests that call `/chat` use the shared `DUMMY_SESSION = "test-session"` constant. Because Barrett AI holds session state in memory (`session_memory_store`), tests that share a session ID can affect each other's conversation context across a test run.
+
+For tests that verify multi-turn behaviour, use a unique session ID per test:
+
+```python
+import uuid
+
+session_id = str(uuid.uuid4())
+```
+
+`test_chat_second_message` already does this with `session_id = "chat-session"`. Apply the same pattern to any new tests that perform sequential `/chat` calls.
+</Warning>

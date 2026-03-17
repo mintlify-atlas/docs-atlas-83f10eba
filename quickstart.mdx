@@ -1,80 +1,215 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Get Barrett AI running and embedded in under 10 minutes."
 ---
 
-## Get started in three steps
+Get the Barrett AI backend running, embed the chat widget, and send your first message — all in a few steps.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+- Python 3.9 or later
+- A [Cerebras API key](https://cloud.cerebras.ai) — Barrett AI uses `llama-3.3-70b` via `langchain-cerebras`
+- The source files: `chatbot.py`, `chatbot.js`, the `app/` directory, and the `static/` directory
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+---
 
-### Step 2: Deploy your changes
+<Steps>
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+<Step title="Install dependencies">
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+From the project root, install all required packages:
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+```bash
+pip install -r requirements.txt
+```
 
-### Step 3: Go live
+`requirements.txt` includes: `fastapi`, `uvicorn`, `python-dotenv`, `langchain`, `langchain-cerebras`, `requests`, `httpx`, `pydantic`, `pydantic-settings`, `dataclasses-json`, `orjson`, `pyyaml`, `tenacity`, `packaging`, and `httptools`.
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+<Tip>Use a virtual environment to keep dependencies isolated: `python -m venv .venv && source .venv/bin/activate`</Tip>
+
+</Step>
+
+<Step title="Set your API key">
+
+Barrett AI reads your Cerebras API key from the environment. Create a `.env` file in the project root:
+
+```bash .env
+CEREBRAS_API_KEY=your_cerebras_api_key_here
+```
+
+The key is loaded in `app/langchain_setup.py`:
+
+```python app/langchain_setup.py
+streaming_llm = ChatCerebras(
+    api_key=os.getenv("CEREBRAS_API_KEY"),
+    model="llama-3.3-70b",
+    temperature=0,
+    streaming=True,
+    callbacks=[],
+    verbose=False,
+)
+```
+
+<Warning>Never commit `.env` to version control. Add it to `.gitignore` before your first commit.</Warning>
+
+</Step>
+
+<Step title="(Optional) Update CORS origins">
+
+By default, `chatbot.py` allows requests only from these origins:
+
+```python chatbot.py
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://172.16.40.27",
+        "http://localhost",
+        "http://172.16.0.50:8050",
+        "http://172.16.0.51",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+```
+
+Add any additional internal hostnames or IPs where you plan to embed the widget to this list before deploying.
+
+<Note>If you are testing locally with `http://localhost`, it is already in the allowed origins list and no change is needed.</Note>
+
+</Step>
+
+<Step title="Start the server">
+
+Launch the FastAPI app using Uvicorn. The `app` object lives in `chatbot.py`:
+
+<CodeGroup>
+
+```bash Default (development)
+uvicorn chatbot:app
+```
+
+```bash Custom host and port
+uvicorn chatbot:app --host 0.0.0.0 --port 81
+```
+
+```bash With auto-reload (development)
+uvicorn chatbot:app --reload
+```
+
+</CodeGroup>
+
+When the server starts successfully you will see output similar to:
+
+```
+INFO:     Application started with optimizations
+INFO:     Uvicorn running on http://127.0.0.1:8000
+```
+
+Static files are served from the `/static` route, mapped to the `static/` directory.
+
+</Step>
+
+<Step title="Verify the server is responding">
+
+Send a quick health check to the root endpoint:
+
+```bash
+curl http://localhost:8000/
+```
+
+Expected response:
+
+```json
+{
+  "status": "ok",
+  "ip": "127.0.0.1",
+  "host": "localhost"
+}
+```
+
+</Step>
+
+<Step title="Configure the widget">
+
+Open `chatbot.js` and update the two configuration variables at the top of the file to match your server:
+
+```javascript chatbot.js
+const ip_address = "10.10.10.10";
+const backend_port = "81";
+```
+
+Set `ip_address` to the IP or hostname of the machine running the FastAPI server, and `backend_port` to the port Uvicorn is listening on. The widget builds the backend URL as:
+
+```javascript
+var s = `http://${ip_address}:${backend_port}`;
+```
+
+</Step>
+
+<Step title="Embed the widget in your HTML page">
+
+Add three tags to the `<head>` (or before `</body>`) of any internal page where you want the chatbot to appear:
+
+```html
+<!-- Font Awesome icons (required for widget buttons) -->
+<link
+  rel="stylesheet"
+  href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"
+/>
+
+<!-- Markdown rendering for AI responses -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+<!-- Barrett AI widget -->
+<script src="chatbot.js"></script>
+```
+
+No other markup is needed. The widget creates and injects all its own DOM elements when the page loads.
+
+<Note>
+`chatbot.js` must be served from the same host as the page embedding it, or from a path the browser can reach. If you are serving it from the FastAPI server, place it inside the `static/` directory and reference it as `http://<your-server>/static/chatbot.js`.
+</Note>
+
+</Step>
+
+<Step title="Send your first message">
+
+Open the page in a browser. You will see a red robot-icon button in the bottom-right corner. Click it to open the chat window.
+
+Barrett AI will greet you with:
+
+> **Hi! What is your name?**
+
+Type your name and press **Enter** (or click the send button). The chatbot will address you by name for the rest of the session.
+
+After providing your name, ask an IT question to confirm the LLM is responding:
+
+> My Outlook is not sending emails. What should I do?
+
+You should see Barrett AI stream a response token-by-token.
+
+<Note>Sessions expire after 3 minutes of inactivity. The widget will disable the input and display "Session expired. Refresh page to start new chat." when this happens.</Note>
+
+</Step>
+
+</Steps>
+
+---
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Widget customization" icon="palette" href="/widget/customization">
+    Change colors, position, and behavior of the embedded widget.
+  </Card>
+  <Card title="Deployment" icon="server" href="/deployment/requirements">
+    Run Barrett AI in production behind a reverse proxy.
+  </Card>
+  <Card title="Session management" icon="clock" href="/features/session-management">
+    Understand how sessions, timeouts, and memory work.
+  </Card>
+  <Card title="API reference" icon="code" href="/api/overview">
+    Explore all available endpoints and their request/response formats.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

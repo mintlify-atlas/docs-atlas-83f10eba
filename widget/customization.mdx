@@ -1,0 +1,201 @@
+---
+title: "Customizing the widget"
+description: "Adjust the appearance and behavior of the Barrett AI chat widget."
+---
+
+All visual and behavioral customizations are made directly in `chatbot.js`. There is no external configuration file — the relevant variables and constants are grouped near the top of the file or clearly labeled with inline comments.
+
+## Color scheme
+
+The widget uses a dark theme with a red brand accent. All colors are defined as CSS values applied inline through JavaScript.
+
+<Color variant="table">
+  <Color.Row title="Widget colors">
+    <Color.Item name="Dark panel background" value="#1a1a1a" />
+    <Color.Item name="User message bubbles" value="#444444" />
+    <Color.Item name="AI message bubbles" value="#2a2a2a" />
+    <Color.Item name="Brand accent (Barrett red)" value="#ff173a" />
+  </Color.Row>
+  <Color.Row title="Link colors">
+    <Color.Item name="Link (default)" value="#00bcd4" />
+    <Color.Item name="Link (hover)" value="#ff173a" />
+    <Color.Item name="Link (visited)" value="#9c27b0" />
+  </Color.Row>
+</Color>
+
+To change a color, search for its hex value in `chatbot.js` and replace it wherever it appears. The background, bubble, and accent colors may appear in multiple places (e.g., initial styles and dynamic style updates on expand/collapse).
+
+<Tip>
+  The brand accent `#ff173a` is used for the floating button background, the send button, the header bar, and link hover states. Changing it in all locations keeps the widget visually consistent.
+</Tip>
+
+## Chatbot name and subtitle
+
+The header text is set by direct DOM assignment. Locate these two lines in `chatbot.js` and update the string values:
+
+```javascript chatbot.js
+d.textContent = "Barrett AI";
+y.textContent = "Hi! I'm Barrett AI, your IT assistant";
+```
+
+- `d` is the element that renders the chatbot's display name in the panel header.
+- `y` is the subtitle shown beneath the name.
+
+## Logo
+
+The avatar image is loaded from the backend's static file server. The URL is constructed at the top of `chatbot.js`:
+
+```javascript chatbot.js
+const ip_address = "10.10.10.10";
+const backend_port = "81";
+var s = `http://${ip_address}:${backend_port}`;
+const logoURL = `http://${s}/static/logo.png`;
+```
+
+To use a different image:
+
+- **Replace the file on the server** — swap `static/logo.png` on the FastAPI server with any PNG. The widget will pick it up on next load without code changes.
+- **Point to a different URL** — change `logoURL` to an absolute URL or a path to a different file.
+
+<Warning>
+  If `static/logo.png` is missing or inaccessible, the avatar will display as a broken image. Confirm the file exists and the server returns a 200 response before deploying.
+</Warning>
+
+## Widget dimensions
+
+### Desktop layout (viewport > 768px)
+
+| Element | Width | Height |
+|---|---|---|
+| Floating open button | 60px | 60px |
+| Chat panel | 400px | 600px (max 70vh) |
+
+The panel is anchored to the bottom-right corner of the viewport:
+
+```javascript chatbot.js
+// Desktop reset in resize handler
+n.style.width = "400px";
+n.style.left = "auto";
+o.style.height = "600px";
+o.style.maxHeight = "70vh";
+C.style.width = "60px";
+C.style.height = "60px";
+```
+
+### Mobile layout (viewport ≤ 768px)
+
+```javascript chatbot.js
+n.style.width = "calc(100% - 40px)";
+n.style.left = "20px";
+n.style.right = "20px";
+o.style.height = "500px";
+o.style.maxHeight = "80vh";
+C.style.width = "50px";
+C.style.height = "50px";
+```
+
+### Compact mobile layout (viewport ≤ 480px)
+
+```javascript chatbot.js
+o.style.height = "400px"; // if not expanded
+```
+
+The resize handler `z()` runs on `window.resize` and on initial page load to apply the correct layout immediately.
+
+## Expand / fullscreen mode
+
+The widget includes a toggle that switches between the default panel and a fullscreen overlay. The expand button is rendered in the panel header.
+
+```javascript chatbot.js
+x.addEventListener("click", function (e) {
+    if (I) {
+        // Collapse back to default panel
+        o.style.width = "100%";
+        o.style.height = "600px";
+        o.style.position = "static";
+        I = false;
+    } else {
+        // Expand to fullscreen overlay
+        o.style.width = "90vw";
+        o.style.height = "90vh";
+        o.style.position = "fixed";
+        o.style.top = "50%";
+        o.style.left = "50%";
+        o.style.transform = "translate(-50%, -50%)";
+        I = true;
+    }
+});
+```
+
+In expanded mode the panel is `90vw × 90vh`, centered on screen using `fixed` positioning and a CSS translate. To change the expanded size, update the `90vw` and `90vh` values.
+
+## Markdown rendering
+
+AI responses are parsed and rendered as HTML using [marked.js](https://marked.js.org/):
+
+```javascript chatbot.js
+p.innerHTML = marked.parse(x); // x is the raw AI response string
+```
+
+This means the LLM can return standard Markdown in its responses and the widget will render it correctly. Supported formatting includes:
+
+- **Bold** and _italic_ text
+- Ordered and unordered lists
+- Inline `code` and fenced code blocks
+- Hyperlinks
+
+### Link styling
+
+Links inside chat bubbles are styled with CSS applied to the widget's message container. The colors follow the scheme below:
+
+| State | Color |
+|---|---|
+| Default | `#00bcd4` (cyan) |
+| Hover | `#ff173a` (Barrett red) |
+| Visited | `#9c27b0` (purple) |
+
+To change link colors, find the CSS rules for `a`, `a:hover`, and `a:visited` inside the style block that `chatbot.js` injects into the document.
+
+## Session timeout
+
+The inactivity timer is hardcoded to 3 minutes in `chatbot.js`:
+
+```javascript chatbot.js
+sessionTimer = setTimeout(async () => {
+    const res = await fetch(`${s}/reset-session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: session_id }),
+    });
+    if (res.ok) {
+        v.disabled = true;
+        b.disabled = true;
+        v.placeholder = "Session expired. Refresh page to start new chat.";
+    }
+}, 3 * 60 * 1000);
+```
+
+To change the timeout, replace `3 * 60 * 1000` with your desired duration in milliseconds. For example, `5 * 60 * 1000` sets a 5-minute timeout.
+
+<Warning>
+  The session timeout is enforced in both the frontend (`chatbot.js`) and the Python backend. If you change the duration in the JavaScript file, update the corresponding timeout value in the FastAPI application as well, or sessions may expire at different times on each side.
+</Warning>
+
+## Restricted response count
+
+The widget enforces a threshold that limits how many restricted responses a user can receive before triggering a 3-minute block. This threshold is controlled by the `restrictedResponseCount` variable in `chatbot.js`.
+
+The default value is `2` — after 2 restricted responses, the user is blocked from sending messages for 3 minutes.
+
+To change the threshold, find `restrictedResponseCount` in `chatbot.js` and update its comparison value:
+
+```javascript chatbot.js
+// Example: increase threshold to 4 before blocking
+if (restrictedResponseCount >= 4) {
+    // trigger 3-minute block
+}
+```
+
+<Note>
+  The block duration is separate from the inactivity timeout. The inactivity timer resets on any user activity, while the restricted response block runs for a fixed 3 minutes regardless of activity.
+</Note>

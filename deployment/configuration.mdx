@@ -1,0 +1,167 @@
+---
+title: "Configuration"
+description: "Configure Barrett AI for your network environment before deployment."
+---
+
+## Environment variables
+
+Barrett AI reads secrets from a `.env` file in the project root via `python-dotenv`.
+
+Create a `.env` file with the following content:
+
+```bash .env
+CEREBRAS_API_KEY=your_key_here
+```
+
+The key is loaded in `langchain_setup.py`:
+
+```python langchain_setup.py
+load_dotenv()
+streaming_llm = ChatCerebras(
+    api_key=os.getenv("CEREBRAS_API_KEY"),
+    ...
+)
+```
+
+<Warning>
+  Never commit `.env` to version control. Add it to `.gitignore` before your first commit.
+</Warning>
+
+## CORS origins
+
+Only browser origins listed in `allow_origins` can send requests to the API. The default configuration in `chatbot.py` is:
+
+```python chatbot.py
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://172.16.40.27",
+        "http://localhost",
+        "http://172.16.0.50:8050",
+        "http://172.16.0.51",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+```
+
+To add a new origin, append its full URL (including scheme and port if non-standard) to the `allow_origins` list. For example, to allow a client at `http://192.168.1.100:3000`:
+
+```python
+allow_origins=[
+    "http://172.16.40.27",
+    "http://localhost",
+    "http://172.16.0.50:8050",
+    "http://172.16.0.51",
+    "http://192.168.1.100:3000",  # added
+],
+```
+
+<Info>
+  `allow_credentials=True` is required for cookie-based session support. Do not replace `allow_origins` with `["*"]` when credentials are enabled — browsers will reject the response.
+</Info>
+
+## Widget configuration
+
+The embedded chat widget (`chatbot.js`) needs to know where to reach the backend. Edit the two constants at the top of the file:
+
+```javascript chatbot.js
+const ip_address = "10.10.10.10";
+const backend_port = "81";
+var s = `http://${ip_address}:${backend_port}`;
+const logoURL = `http://${s}/static/logo.png`;
+```
+
+- **`ip_address`** — The IP address or hostname of the machine running Barrett AI. Must be reachable from the user's browser.
+- **`backend_port`** — The port the server is bound to. Defaults to `81`. Change this if you use a different port.
+
+<Tip>
+  `ip_address` and `backend_port` must match the `--host` and `--port` arguments you pass to `uvicorn`.
+</Tip>
+
+## Static files
+
+The `static/` directory is mounted at `/static/` and served directly by FastAPI:
+
+```python chatbot.py
+app.mount("/static", StaticFiles(directory="static"), name="static")
+```
+
+Place `logo.png` inside `static/`. The widget loads it at `http://<ip_address>:<backend_port>/static/logo.png` using the `logoURL` constant above.
+
+<Warning>
+  The server will fail to start if the `static/` directory does not exist. Create it before running `uvicorn`.
+</Warning>
+
+## Session timeout
+
+Sessions expire after a period of inactivity, defined by `SESSION_TIMEOUT` in `chatbot.py`:
+
+```python chatbot.py
+SESSION_TIMEOUT = timedelta(minutes=3)
+```
+
+Increase this value if users report losing their session during longer conversations. Note that longer timeouts increase memory usage for the in-memory session store.
+
+## Performance tuning
+
+Three constants in `chatbot.py` control threading and batch behavior:
+
+```python chatbot.py
+MAX_WORKERS = 20  # Thread pool size for I/O operations
+BATCH_SIZE = 10   # For batch processing
+CLEANUP_INTERVAL = 300  # 5 minutes in seconds
+
+thread_pool = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+```
+
+| Constant | Default | Description |
+|---|---|---|
+| `MAX_WORKERS` | `20` | Maximum threads in the pool for blocking I/O operations. Increase on high-core machines with heavy concurrent load. |
+| `BATCH_SIZE` | `10` | Number of items processed together in batch operations. |
+| `CLEANUP_INTERVAL` | `300` | Seconds between expired session cleanup sweeps (5 minutes). |
+
+<Note>
+  `MAX_WORKERS` affects the `ThreadPoolExecutor` that handles I/O-bound work offloaded from the async event loop. This is separate from the number of uvicorn worker processes, which should remain `1`.
+</Note>
+
+## Log configuration
+
+Logging is configured in `chatbot.py` using `app/logger.py`:
+
+```python chatbot.py
+log = make_logs("logs", max_log_file_size=5_000_000, backup_logs=3)
+remove_old_logs(Path("logs"))
+```
+
+| Parameter | Value | Description |
+|---|---|---|
+| `log_dir` | `"logs"` | Directory where log files are written. |
+| `max_log_file_size` | `5_000_000` (5 MB) | Maximum size of a single log file before rotation. |
+| `backup_logs` | `3` | Number of rotated backup files to keep. |
+| Auto-cleanup | 7 days | `remove_old_logs` deletes log files older than 7 days on startup. |
+
+Two log files are created:
+
+- `logs/chatbot.log` — General application log
+- `logs/error.log` — Error-level events only
+
+## System prompt customization
+
+Barrett AI's behavior, allowed topics, and escalation contact are defined in the system prompt. Edit the file:
+
+```
+app/prompts/system_prompt.py
+```
+
+This file controls:
+
+- **Persona** — How Barrett AI introduces and presents itself
+- **Allowed topics** — Which IT helpdesk topics the chatbot will address
+- **Out-of-scope handling** — How it responds to questions outside its domain
+- **Escalation contact** — The human contact shown when the chatbot cannot resolve an issue
+
+<Tip>
+  After editing the system prompt, restart the server for changes to take effect. The prompt is loaded once at startup.
+</Tip>

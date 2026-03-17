@@ -1,0 +1,198 @@
+---
+title: "IP management"
+description: "Endpoints for checking and storing client IP addresses."
+---
+
+Three endpoints expose IP-related functionality: a health-check root that returns resolved hostnames, a lookup endpoint that checks whether an IP is stored, and a write endpoint that adds an IP to the in-memory set.
+
+<Note>
+All three endpoints detect the caller's IP from request headers in the same order: `X-Forwarded-For` → `X-Real-IP` → `request.client.host`. See [API overview — Client IP detection](/api/overview#client-ip-detection) for the full utility function.
+</Note>
+
+---
+
+## GET /
+
+Health check endpoint. Returns the server status, the caller's IP address, and the reverse-DNS hostname for that IP.
+
+**Method:** `GET`  
+**Path:** `/`  
+**Request body:** none
+
+### Response — 200
+
+<ResponseField name="status" type="string">
+  Always `"ok"` when the server is running.
+</ResponseField>
+
+<ResponseField name="ip" type="string">
+  The caller's IP address as detected from request headers.
+</ResponseField>
+
+<ResponseField name="host" type="string">
+  Reverse-DNS hostname resolved via `socket.gethostbyaddr()`. Returns `"Unknown"` if DNS resolution fails (`socket.herror`).
+</ResponseField>
+
+```json
+{
+  "status": "ok",
+  "ip": "172.16.40.10",
+  "host": "ws-finance-01.barrett.local"
+}
+```
+
+### Hostname caching
+
+Hostname lookups run in a background thread pool to avoid blocking the async event loop. Results are cached in an LRU cache with a maximum of 500 entries:
+
+```python chatbot.py
+hostname_cache = LRUCache(max_size=500)
+```
+
+The first request from a given IP triggers a DNS lookup. All subsequent requests from the same IP return the cached hostname immediately. The cache is in-memory only and is cleared on server restart.
+
+### Example
+
+```bash
+curl http://172.16.0.50:81/
+```
+
+```json
+{
+  "status": "ok",
+  "ip": "172.16.40.10",
+  "host": "ws-finance-01.barrett.local"
+}
+```
+
+---
+
+## GET /check-ip
+
+Checks whether the caller's IP address is present in the in-memory stored IP set.
+
+**Method:** `GET`  
+**Path:** `/check-ip`  
+**Request body:** none
+
+### Response — 200
+
+<ResponseField name="status" type="string">
+  Always `"success"`.
+</ResponseField>
+
+<ResponseField name="ip" type="string">
+  The caller's IP address as detected from request headers.
+</ResponseField>
+
+<ResponseField name="already_stored" type="boolean">
+  `true` if the IP was previously added via `POST /store-ip`, `false` otherwise.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable status: `"IP {ip} already stored"` or `"IP {ip} not stored yet"`.
+</ResponseField>
+
+```json
+{
+  "status": "success",
+  "ip": "172.16.40.10",
+  "already_stored": false,
+  "message": "IP 172.16.40.10 not stored yet"
+}
+```
+
+### Example
+
+```bash
+curl http://172.16.0.50:81/check-ip
+```
+
+---
+
+## POST /store-ip
+
+Adds an IP address to the in-memory stored IP set. If the IP is already in the set, the endpoint returns without modifying state.
+
+**Method:** `POST`  
+**Path:** `/store-ip`  
+**Content-Type:** `application/json`
+
+### Body
+
+<ParamField body="ip" type="string" required>
+  The IP address to store. Must be a non-empty string. The endpoint does not validate IP format — any non-empty string is accepted.
+</ParamField>
+
+### Response — 200 (new IP)
+
+<ResponseField name="status" type="string">
+  `"success"` — the IP was added to the set.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  `"IP {ip} stored successfully"`
+</ResponseField>
+
+<ResponseField name="ip" type="string">
+  The IP address that was stored, echoed back from the request body.
+</ResponseField>
+
+```json
+{
+  "status": "success",
+  "message": "IP 192.168.1.100 stored successfully",
+  "ip": "192.168.1.100"
+}
+```
+
+### Response — 200 (already stored)
+
+<ResponseField name="status" type="string">
+  `"already_stored"` — the IP was already in the set; no change was made.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  `"IP {ip} was already stored"`
+</ResponseField>
+
+<ResponseField name="ip" type="string">
+  The IP address from the request body.
+</ResponseField>
+
+```json
+{
+  "status": "already_stored",
+  "message": "IP 192.168.1.100 was already stored",
+  "ip": "192.168.1.100"
+}
+```
+
+### Error responses
+
+| Status | Detail | Cause |
+|--------|--------|-------|
+| `400` | `IP address is required` | `ip` field is absent or blank in the request body |
+| `400` | `Invalid JSON in request body` | Request body is not valid JSON |
+
+### Example
+
+<CodeGroup>
+
+```bash Store a new IP
+curl -X POST http://172.16.0.50:81/store-ip \
+  -H "Content-Type: application/json" \
+  -d '{"ip": "192.168.1.100"}'
+```
+
+```bash Store an already-stored IP
+curl -X POST http://172.16.0.50:81/store-ip \
+  -H "Content-Type: application/json" \
+  -d '{"ip": "192.168.1.100"}'
+```
+
+</CodeGroup>
+
+<Warning>
+Stored IPs are held in a Python `set` in server memory. They are not persisted to disk and are lost on server restart. If you need persistent IP tracking, store IPs externally before restarting the server.
+</Warning>

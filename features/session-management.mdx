@@ -1,0 +1,130 @@
+---
+title: 'Session management'
+description: 'How Barrett AI manages user sessions, conversation memory, and automatic expiry.'
+keywords: ['session', 'memory', 'expiry', 'conversation', 'langchain']
+---
+
+Barrett AI assigns every browser tab its own session. Each session carries an isolated conversation memory, a username, and an activity timestamp. When a session goes idle for three minutes, the server clears it automatically.
+
+## Session creation
+
+The client generates a session ID in JavaScript when the page loads and stores it in `sessionStorage` so it survives soft navigations but not tab closes.
+
+```javascript
+const sessionId = "session_" + Math.random().toString(36).slice(2, 9);
+sessionStorage.setItem("session_id", sessionId);
+```
+
+The generated ID is a seven-character alphanumeric string prefixed with `session_`, for example `session_k4z8r1m`.
+
+Every chat request sends this value in the `session_id` field of the JSON body. The server uses it as the key into four in-memory dictionaries:
+
+| Store | Type | Purpose |
+|---|---|---|
+| `session_memory_store` | `dict[str, ConversationBufferWindowMemory]` | LangChain conversation memory per session |
+| `session_last_active` | `dict[str, datetime]` | UTC timestamp of the last request |
+| `session_usernames` | `dict[str, str]` | Display name collected from the user |
+| `expired_sessions` | `set[str]` | Sessions that have timed out |
+
+## Conversation memory
+
+On the first message from a new session ID, the server initialises a `ConversationBufferWindowMemory` and injects the system prompt:
+
+```python
+if sess not in session_memory_store:
+    memory = ConversationBufferWindowMemory(k=6, return_messages=True)
+    memory.chat_memory.add_message(SystemMessage(content=system_prompt))
+    session_memory_store[sess] = memory
+```
+
+<Info>
+  `k=6` means the memory window retains the last **6 exchanges** (6 human messages and their 6 AI replies). Older turns are dropped from the context sent to the LLM, keeping token usage bounded.
+</Info>
+
+The system prompt is added once as a `SystemMessage` at the top of the chat history. It is never re-added on subsequent turns.
+
+## Username collection
+
+Barrett AI collects the user's display name during the natural flow of conversation rather than through a separate form.
+
+<Steps>
+  <Step title="Greeting detected">
+    When a user's first message matches a greeting — `hello`, `hi`, `hey`, `salaam`, or `aoa` — the bot responds by asking for their name.
+  </Step>
+  <Step title="Name stored">
+    The next human message is treated as the username and saved to `session_usernames[sess]`. It is also used to personalise the file path for chat history logs.
+  </Step>
+  <Step title="Username used in file naming">
+    `build_history_path()` in `utilities.py` reads `session_usernames` to embed the name in the JSONL filename (see [Chat history](/features/chat-history)).
+  </Step>
+</Steps>
+
+## Session timeout
+
+Two mechanisms enforce the three-minute inactivity limit.
+
+### Per-request check
+
+At the top of the chat endpoint, the server compares the current UTC time against `session_last_active`:
+
+```python
+SESSION_TIMEOUT = timedelta(minutes=3)
+
+if last and now - last > SESSION_TIMEOUT:
+    expired_sessions.add(sess)
+    session_memory_store.pop(sess, None)
+    return {"response": "Session expired; please refresh.", "session_expired": True}
+```
+
+If the gap exceeds three minutes the session is moved to `expired_sessions`, its memory is cleared, and the endpoint returns a JSON payload with `session_expired: true`.
+
+### Background cleanup task
+
+A background coroutine runs every five minutes and sweeps all tracked sessions:
+
+```python
+CLEANUP_INTERVAL = 300  # 5 minutes in seconds
+
+async def cleanup_expired_sessions():
+    while True:
+        await asyncio.sleep(CLEANUP_INTERVAL)
+        now = datetime.now(timezone.utc)
+        expired_session_ids = []
+        for session_id, last_active in session_last_active.items():
+            if now - last_active > SESSION_TIMEOUT:
+                expired_session_ids.append(session_id)
+        for session_id in expired_session_ids:
+            expired_sessions.add(session_id)
+            session_last_active.pop(session_id, None)
+            session_memory_store.pop(session_id, None)
+            session_usernames.pop(session_id, None)
+```
+
+<Note>
+  The background task frees memory for sessions that went idle without sending another message. Without it, sessions that simply close the tab would never be cleared.
+</Note>
+
+## Expiry flow
+
+```
+User sends message
+        │
+        ▼
+  sess in expired_sessions? ──yes──► return session_expired: true
+        │ no
+        ▼
+  now - last_active > 3 min? ─yes──► add to expired_sessions
+        │                            clear memory
+        │ no                         return session_expired: true
+        ▼
+  Process message normally
+  Update session_last_active[sess]
+```
+
+<Warning>
+  Once a session is expired, it cannot be resumed. The client must reload the page to obtain a new session ID and start a fresh conversation.
+</Warning>
+
+## Client-side inactivity timer
+
+The frontend mirrors the server timeout with its own three-minute JavaScript timer. When the timer fires it calls `POST /reset-session` and disables the input field, preventing users from typing into what would be a dead session before they receive a server error.

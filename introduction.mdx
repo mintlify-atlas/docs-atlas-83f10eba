@@ -1,0 +1,88 @@
+---
+title: "Introduction"
+description: "Barrett AI is an IT helpdesk chatbot for Barrett Hodgson Pakistan, powered by LangChain and Cerebras LLM with real-time streaming support."
+---
+
+# Barrett AI Chatbot
+
+Barrett AI is an intelligent IT support assistant built for Barrett Hodgson Pakistan. It provides instant, context-aware help for common IT issues through a conversational interface — available as an embeddable widget on any internal web page.
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get Barrett AI running in minutes with step-by-step setup instructions.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore the full REST API — endpoints, parameters, and response formats.
+  </Card>
+  <Card title="Widget Integration" icon="puzzle-piece" href="/widget/embedding">
+    Embed the chatbot widget into any internal web page with a single script tag.
+  </Card>
+  <Card title="Deployment" icon="server" href="/deployment/requirements">
+    Configure and deploy Barrett AI on your internal network infrastructure.
+  </Card>
+</CardGroup>
+
+## What Barrett AI does
+
+Barrett AI handles first-line IT support for employees at Barrett Hodgson Pakistan. When a user opens the widget, Barrett AI greets them by name and helps them troubleshoot common IT problems — or escalates to the IT team when needed.
+
+### Supported issue categories
+
+<CardGroup cols={2}>
+  <Card title="Outlook & Email" icon="envelope">
+    Email delivery issues, junk mail, full mailboxes, and Outbox problems on the LAN-based Exchange server.
+  </Card>
+  <Card title="Printers" icon="print">
+    Print quality problems, connectivity failures, and driver issues across all office printers.
+  </Card>
+  <Card title="Shared Folders" icon="folder-open">
+    Access requests and troubleshooting for network shared folders. Guides users to submit access via HDMS or email.
+  </Card>
+  <Card title="USB Devices" icon="usb">
+    USB recognition failures, port testing, and escalation when hardware may be blocked by IT policy.
+  </Card>
+  <Card title="Mouse & Keyboard" icon="computer-mouse">
+    Peripheral connectivity issues with guided port-testing steps before escalation.
+  </Card>
+  <Card title="Internal Apps & Portals" icon="grid">
+    Navigation help for ERP systems (SAP FIORI, SolMan), in-house tools (PMS, SDMS, QARMS), HDMS ticketing, and MFT file transfer.
+  </Card>
+</CardGroup>
+
+## How it works
+
+Barrett AI is a FastAPI application that wraps a LangChain conversation chain powered by the Cerebras `llama-3.3-70b` model. Each user gets a session with windowed conversation memory, and responses stream token-by-token to the browser.
+
+```
+User Browser  ──→  chatbot.js widget
+                        │
+                        ▼
+              FastAPI (chatbot.py)
+                        │
+              LangChain chain (langchain_setup.py)
+                        │
+              Cerebras LLM (llama-3.3-70b)
+                        │
+              StreamingResponse ──→  Browser
+```
+
+- **Sessions**: Each browser session gets a unique ID. Memory is held server-side for 3 minutes of inactivity, then purged.
+- **Streaming**: Responses stream token-by-token via `StreamingResponse` for a natural typing effect.
+- **History**: All conversations are saved as JSONL files on disk, organized by date, IP, and username.
+- **Escalation**: If Barrett AI cannot resolve an issue, it directs users to call IT at Ext: 2025 or file a ticket at HDMS.
+
+## Architecture overview
+
+| Component | Technology |
+|-----------|-----------|
+| Backend framework | FastAPI + Uvicorn |
+| LLM | Cerebras `llama-3.3-70b` via `langchain-cerebras` |
+| Memory | LangChain `ConversationBufferWindowMemory` (k=6) |
+| Caching | In-memory LLM cache + LRU hostname cache |
+| Chat history | JSONL files written via async batched `FileOperationManager` |
+| Frontend widget | Vanilla JavaScript (no dependencies except marked.js) |
+| Load testing | Locust |
+
+<Note>
+Barrett AI is designed for internal network deployment. CORS is pre-configured for specific internal IP ranges. Update the allowed origins in `chatbot.py` before deploying to your environment.
+</Note>

@@ -1,0 +1,164 @@
+---
+title: 'Streaming responses'
+description: 'How Barrett AI streams LLM tokens to the browser in real time.'
+keywords: ['streaming', 'langchain', 'cerebras', 'fastapi', 'server-sent', 'token']
+---
+
+Barrett AI streams each response token-by-token from the Cerebras LLM through FastAPI to the browser. This gives the user immediate visual feedback rather than a blank wait followed by a full response.
+
+## LLM configuration
+
+The Cerebras model is initialised in `langchain_setup.py` with streaming enabled:
+
+```python
+streaming_llm = ChatCerebras(
+    api_key=os.getenv("CEREBRAS_API_KEY"),
+    model="llama-3.3-70b",
+    temperature=0,
+    streaming=True,
+    callbacks=[],
+    verbose=False,
+)
+```
+
+<Info>
+  `temperature=0` makes responses fully deterministic, which is appropriate for an IT helpdesk where consistent, factual answers matter more than creative variation.
+</Info>
+
+## Streaming handler
+
+`StreamingHandler` is a LangChain `BaseCallbackHandler` that accumulates tokens as the LLM emits them:
+
+```python
+class StreamingHandler(BaseCallbackHandler):
+    def __init__(self):
+        self.tokens = []
+
+    def on_llm_new_token(self, token: str, **kwargs):
+        self.tokens.append(token)
+
+    def get_response(self):
+        return "".join(self.tokens)
+```
+
+Each call to `on_llm_new_token` appends one token to the list. `get_response()` joins the list into the full response string, which is used to persist the complete message to memory and disk after streaming finishes.
+
+## LangChain chain
+
+The prompt template and the LLM are composed into a single chain:
+
+```python
+base_prompt = ChatPromptTemplate.from_messages([
+    MessagesPlaceholder(variable_name="history"),
+    ("human", "{user_input}"),
+])
+
+stream_chain = base_prompt | streaming_llm
+```
+
+`history` is populated from the session's `ConversationBufferWindowMemory` (last 6 exchanges). `user_input` is the current message from the user.
+
+## Token stream generator
+
+The chat endpoint defines an async generator that iterates over `stream_chain.astream()` and yields each new token:
+
+```python
+async def token_stream():
+    full_resp = ""
+    async for _ in stream_chain.astream(inputs):
+        if handler.tokens:
+            new_token = handler.tokens[-1]
+            full_resp += new_token
+            yield new_token
+            await asyncio.sleep(0.01)
+    background_tasks.add_task(memory.chat_memory.add_user_message, msg)
+    background_tasks.add_task(memory.chat_memory.add_ai_message, full_resp)
+    records = [
+        {"role": "user", "text": msg},
+        {"role": "assistant", "text": full_resp},
+    ]
+    background_tasks.add_task(file_manager.queue_write, path, records)
+```
+
+<Note>
+  `asyncio.sleep(0.01)` introduces a 10 ms pause between tokens. This prevents the event loop from being starved and gives the browser time to flush each chunk to the UI.
+</Note>
+
+Once the stream is exhausted, the generator schedules three background tasks:
+
+1. Add the user message to LangChain memory.
+2. Add the complete AI response to LangChain memory.
+3. Queue the exchange for disk persistence via `FileOperationManager`.
+
+## FastAPI response
+
+The generator is wrapped in a `StreamingResponse`:
+
+```python
+return StreamingResponse(token_stream(), media_type="text/plain")
+```
+
+The `text/plain` media type tells the browser to treat the body as a raw byte stream rather than trying to parse it as JSON, which allows the client to read it incrementally.
+
+## Client-side handling
+
+<Steps>
+  <Step title="Initiate the fetch">
+    The browser calls `fetch()` with the chat payload and reads the response as a `ReadableStream`.
+
+    ```javascript
+    const response = await fetch("/chat", { method: "POST", body: JSON.stringify(payload) });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    ```
+  </Step>
+  <Step title="Read tokens incrementally">
+    A loop reads chunks from the stream and appends them to the message bubble as they arrive:
+
+    ```javascript
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        rawText += decoder.decode(value, { stream: true });
+        messageDiv.innerHTML = rawText;
+    }
+    ```
+  </Step>
+  <Step title="Render markdown on completion">
+    After the stream ends, the accumulated text is passed through `marked.js` to render headings, lists, bold text, and code blocks:
+
+    ```javascript
+    messageDiv.innerHTML = marked.parse(rawText);
+    ```
+  </Step>
+</Steps>
+
+## JSON fallback path
+
+Not every response is streamed. The client checks whether the response body starts with `{` to detect JSON:
+
+```javascript
+if (rawText.trimStart().startsWith("{")) {
+    const parsed = JSON.parse(rawText);
+    if (parsed.session_expired) {
+        // Show expiry notice, disable input
+    } else {
+        messageDiv.innerHTML = marked.parse(parsed.response);
+    }
+}
+```
+
+JSON responses are returned in two situations:
+
+<AccordionGroup>
+  <Accordion title="Session expired">
+    When the server detects an inactive session it returns `{"response": "Session expired; please refresh.", "session_expired": true}`. The client disables the input and shows an expiry notice.
+  </Accordion>
+  <Accordion title="First message handling">
+    Certain first-message paths — such as greeting detection and username prompting — return a JSON object rather than a stream because the response is known before LLM inference begins.
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+  Because `marked.parse()` is only called after the full response is assembled, markdown that spans multiple tokens (for example, a fenced code block) renders correctly even though tokens arrive one at a time.
+</Tip>

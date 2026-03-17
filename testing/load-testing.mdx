@@ -1,0 +1,143 @@
+---
+title: "Load testing"
+description: "Use Locust to simulate concurrent users and measure Barrett AI throughput."
+---
+
+Barrett AI ships with a `locustfile.py` that models realistic user behaviour: each simulated user registers with a name, then sends follow-up IT support questions. Use this file to measure throughput, latency percentiles, and failure rates before deploying to production.
+
+<Warning>
+Load testing sends real requests to the chatbot, which in turn calls the Cerebras API. Every simulated user message incurs an API cost. Run load tests against a staging deployment, not production, and keep run times short during initial profiling.
+</Warning>
+
+## Install Locust
+
+```bash
+pip install locust
+```
+
+## Running Locust
+
+<Steps>
+  <Step title="Start the Locust web UI">
+    Launch Locust with the web dashboard. Open `http://localhost:8089` in your browser to configure the number of users and start the test.
+
+    ```bash
+    locust -f locustfile.py --host http://localhost:81
+    ```
+
+    From the dashboard you can set the total number of users, the spawn rate, and the run time, then watch live charts for requests/sec, response times, and failures.
+  </Step>
+  <Step title="Or run headless">
+    Skip the browser UI and run a fixed scenario directly from the terminal. The example below spawns 50 users at a rate of 10 per second for 60 seconds:
+
+    ```bash
+    locust -f locustfile.py --host http://localhost:81 --headless -u 50 -r 10 --run-time 60s
+    ```
+
+    | Flag | Description |
+    |---|---|
+    | `-u 50` | Total number of concurrent users |
+    | `-r 10` | Users spawned per second until target is reached |
+    | `--run-time 60s` | Stop automatically after 60 seconds |
+
+    Locust prints a summary table to stdout when the run completes.
+  </Step>
+</Steps>
+
+## How `ChatUser` works
+
+The `ChatUser` class in `locustfile.py` models a single employee session.
+
+### Session setup (`on_start`)
+
+When each simulated user starts, `on_start` generates a unique UUID session ID and picks a random name, then sends that name as the first `/chat` message — mirroring how the real widget introduces a new user to the chatbot.
+
+```python
+def on_start(self):
+    self.session_id = str(uuid.uuid4())
+    self.client_tag = "locust-client"
+    self.name = random.choice(["Ali", "Sara", "Ahmed", "Zara", "Usman"])
+    self.send_message(self.name)  # First message = name
+```
+
+Every user gets an isolated session, so there is no cross-user state contamination during a run.
+
+### Think time
+
+```python
+wait_time = between(1, 2)
+```
+
+Locust waits 1–2 seconds between tasks for each user, simulating the natural pause between a user reading a response and typing the next message.
+
+### Follow-up task (`send_followup_message`)
+
+After setup, each user repeatedly picks a random IT issue from a fixed list and sends it to `/chat`:
+
+```python
+@task
+def send_followup_message(self):
+    message = random.choice([
+        "My printer is not working.",
+        "How do I reset my password?",
+        "My computer is too slow.",
+        "I can't connect to the VPN.",
+        "My email is not syncing.",
+    ])
+    self.send_message(message)
+```
+
+### Request validation
+
+`send_message` uses `catch_response=True` so Locust can mark individual requests as failures based on the response content, not just the HTTP status code:
+
+```python
+def send_message(self, msg):
+    payload = {
+        "session_id": self.session_id,
+        "client_tag": self.client_tag,
+        "message": msg,
+    }
+    with self.client.post("/chat", json=payload, catch_response=True) as response:
+        if response.status_code != 200:
+            response.failure(f"HTTP {response.status_code}")
+        elif "response" not in response.json():
+            response.failure("No chatbot response")
+        else:
+            response.success()
+```
+
+A request is counted as a failure if the HTTP status is not 200 **or** the JSON body does not contain a `response` key.
+
+## Metrics to watch
+
+| Metric | What it tells you |
+|---|---|
+| Requests/sec (RPS) | Overall throughput — how many chat turns the server handles per second |
+| p50 response time | Median latency; reflects the typical user experience |
+| p95 response time | Tail latency; 95% of requests complete within this time |
+| p99 response time | Worst-case latency for nearly all requests |
+| Failure rate | Percentage of requests marked as failures by the validation logic above |
+
+<Info>
+The `/chat` endpoint returns a streaming `StreamingResponse`. Locust measures the time until the full response body is received, so response times will be higher than non-streaming endpoints — this is expected behaviour and does not indicate a problem.
+</Info>
+
+## Server-side performance limits
+
+Two constants in `chatbot.py` bound the server's concurrency:
+
+- **`MAX_WORKERS = 20`** — the thread pool size for handling concurrent requests. Ramp up users gradually and watch for latency increases once you exceed 20 concurrent in-flight requests.
+- **Session cleanup every 5 minutes** — idle sessions are purged every 5 minutes. During a long load test, memory usage from active sessions will grow until the cleanup cycle runs.
+
+## Client timeout alignment
+
+<Note>
+The `chatbot.js` widget enforces a **30-second fetch timeout**:
+
+```javascript
+const o = setTimeout(() => n.abort(), 3e4)
+```
+
+Set your Locust client timeout to match this value so the load test accurately reflects what real browser clients experience. Requests that exceed 30 seconds will be aborted by the widget and should be counted as failures.
+</Note>

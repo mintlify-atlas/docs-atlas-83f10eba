@@ -1,0 +1,152 @@
+---
+title: 'Chat history'
+description: 'How Barrett AI persists conversation logs to disk as JSONL files.'
+keywords: ['chat history', 'jsonl', 'file', 'persistence', 'logging']
+---
+
+Every conversation is written to a JSONL file on disk. Barrett AI uses an async-aware, batch-flushing file manager to keep disk I/O from blocking the chat endpoint, and an LRU DNS cache to keep file path resolution fast.
+
+## File path format
+
+Chat logs are stored under a `chats/` directory. A date-named subdirectory is created for each day, and one file is created per session:
+
+```
+chats/
+└── YYYY-MM-DD/
+    └── YYYY-MM-DD_{ip}_{username}_{hostname}.jsonl
+```
+
+For example:
+
+```
+chats/
+└── 2025-07-14/
+    └── 2025-07-14_10.0.0.42_john_doe_ws-finance-04.jsonl
+```
+
+If reverse DNS lookup fails for the client IP, the `_{hostname}` segment is omitted.
+
+### Path construction
+
+`build_history_path()` in `utilities.py` assembles the path at request time:
+
+```python
+HIST_DIR = Path("chats")
+TODAY_DATE = datetime.now().strftime("%Y-%m-%d")
+
+def build_history_path(client_ip: str, session_id: str, usernames: dict) -> Path:
+    TODAY_DIR = make_chat_history_folder(HIST_DIR)
+    user_name = usernames.get(session_id, "").replace(" ", "_")
+    user = user_name.lower()
+    try:
+        host = socket.gethostbyaddr(client_ip)[0]
+    except Exception:
+        host = None
+    fname = f"{TODAY_DATE}_{client_ip}_{user}"
+    if host:
+        fname += f"_{host}"
+    return Path(TODAY_DIR) / f"{fname}.jsonl"
+```
+
+<Note>
+  Spaces in usernames are replaced with underscores and the name is lowercased so the filename is shell-friendly and consistent regardless of how the user typed their name.
+</Note>
+
+### LRU hostname cache
+
+Reverse DNS lookups can be slow. Barrett AI wraps `socket.gethostbyaddr` with an LRU cache capped at 500 entries so that repeated requests from the same IP avoid repeated DNS round-trips:
+
+```python
+from functools import lru_cache
+
+@lru_cache(maxsize=500)
+def resolve_hostname(ip: str) -> str | None:
+    try:
+        return socket.gethostbyaddr(ip)[0]
+    except Exception:
+        return None
+```
+
+## JSONL record format
+
+Each line in a `.jsonl` file is a self-contained JSON object representing one message turn:
+
+```json
+{"role": "user", "text": "How do I reset my Windows password?"}
+{"role": "assistant", "text": "To reset your Windows password, please contact the IT helpdesk..."}
+```
+
+The `role` field is always either `"user"` or `"assistant"`. Records are appended in chronological order, two per exchange (user first, then assistant).
+
+## FileOperationManager
+
+`FileOperationManager` in `file_and_memory.py` decouples write operations from the request lifecycle using an in-memory queue per file path:
+
+```python
+BATCH_SIZE = 10
+
+class FileOperationManager:
+    def __init__(self):
+        self.write_queues = defaultdict(list)
+        self.write_locks = defaultdict(threading.Lock)
+        self.last_flush = {}
+        self.flush_interval = 1.0  # Flush every second
+```
+
+### Enqueuing a write
+
+```python
+async def queue_write(self, path: Path, records: list):
+    path_str = str(path)
+    with self.write_locks[path_str]:
+        self.write_queues[path_str].extend(records)
+    current_time = time.time()
+    if (len(self.write_queues[path_str]) >= BATCH_SIZE or
+        current_time - self.last_flush.get(path_str, 0) > self.flush_interval):
+        await self.flush_queue(path)
+```
+
+A flush is triggered when either condition is met:
+
+<CardGroup cols={2}>
+  <Card title="Batch size" icon="layer-group">
+    The queue for a given file reaches **10 records**. This prevents unbounded memory growth during bursts of activity.
+  </Card>
+  <Card title="Flush interval" icon="clock">
+    More than **1 second** has elapsed since the last flush for that file. This ensures low-traffic sessions are still persisted promptly.
+  </Card>
+</CardGroup>
+
+### Thread-safe writes
+
+Each file path has its own `threading.Lock`. The lock is held only while records are being moved from the queue into a local list, so it is released before the actual file I/O:
+
+```python
+def _write_records_sync(self, path: Path, records: list):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        for record in records:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+```
+
+`ensure_ascii=False` preserves Urdu, Arabic, or other non-ASCII characters that users may type.
+
+## Background task integration
+
+The chat endpoint schedules the write as a FastAPI `BackgroundTask` so it runs after the streaming response has been fully delivered to the client:
+
+```python
+records = [
+    {"role": "user", "text": msg},
+    {"role": "assistant", "text": full_resp},
+]
+background_tasks.add_task(file_manager.queue_write, path, records)
+```
+
+<Info>
+  Using `add_task` means the HTTP response is never delayed by disk I/O. The write is enqueued after the last token has been streamed.
+</Info>
+
+## In-memory LLM response cache
+
+LangChain's `InMemoryCache` is set as the global LLM cache. Identical prompts — same conversation history and same user input — return a cached result instead of making a second Cerebras API call. This reduces latency and API costs for repeated or similar queries within the same server process lifetime.

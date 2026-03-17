@@ -1,0 +1,157 @@
+---
+title: "Requirements"
+description: "System requirements and dependencies for running Barrett AI."
+---
+
+## Python version
+
+Python **3.10 or later** is recommended. Barrett AI uses:
+
+- `match` statements (Python 3.10+)
+- `asyncio.TaskGroup` patterns and improved asyncio event loop handling
+- `asynccontextmanager` for lifespan management
+
+<Warning>
+  Python 3.9 and earlier are not supported. Install Python 3.10+ before proceeding.
+</Warning>
+
+## Python dependencies
+
+All dependencies are listed in `requirements.txt`. Install them with:
+
+```bash
+pip install -r requirements.txt
+```
+
+<AccordionGroup>
+  <Accordion title="Web framework and server">
+    | Package | Purpose |
+    |---|---|
+    | `fastapi` | ASGI web framework powering the chatbot API |
+    | `uvicorn` | ASGI server used to run the FastAPI application |
+    | `httptools` | High-performance HTTP parser used by uvicorn |
+  </Accordion>
+
+  <Accordion title="LLM and LangChain">
+    | Package | Purpose |
+    |---|---|
+    | `langchain` | Core LangChain library for chain construction and memory |
+    | `langchain-cerebras` | LangChain integration for the Cerebras LLM (`ChatCerebras`) |
+
+    <Note>
+      `langchain-groq` appears as an import in `langchain_setup.py` but is not listed in `requirements.txt` and is not the active LLM provider. The active provider is `ChatCerebras` from `langchain-cerebras`.
+    </Note>
+  </Accordion>
+
+  <Accordion title="HTTP clients">
+    | Package | Purpose |
+    |---|---|
+    | `requests` | Synchronous HTTP client used for outbound requests |
+    | `httpx` | Async-capable HTTP client |
+  </Accordion>
+
+  <Accordion title="Data and configuration">
+    | Package | Purpose |
+    |---|---|
+    | `pydantic` | Data validation and settings models |
+    | `pydantic-settings` | `.env` file and environment variable loading for Pydantic models |
+    | `python-dotenv` | Loads variables from a `.env` file into the environment |
+    | `dataclasses-json` | JSON serialization for Python dataclasses |
+    | `orjson` | Fast JSON serialization/deserialization |
+    | `pyyaml` | YAML parsing (used for prompt and config files) |
+  </Accordion>
+
+  <Accordion title="Reliability">
+    | Package | Purpose |
+    |---|---|
+    | `tenacity` | Retry logic with exponential backoff for LLM calls |
+    | `packaging` | Version parsing utilities |
+  </Accordion>
+</AccordionGroup>
+
+## API key
+
+Barrett AI uses **Cerebras** as its LLM provider. You need a Cerebras API key before the server will start.
+
+<Steps>
+  <Step title="Sign up for Cerebras">
+    Create an account at [cerebras.ai](https://cerebras.ai) and navigate to the API section of your dashboard.
+  </Step>
+  <Step title="Generate an API key">
+    Create a new API key and copy it. You will add this to your `.env` file in the configuration step.
+  </Step>
+</Steps>
+
+<Info>
+  The API key is read at startup via `os.getenv("CEREBRAS_API_KEY")`. The server will fail to initialize the LLM if this variable is missing or invalid.
+</Info>
+
+## Network requirements
+
+The server binds to `0.0.0.0` and must be reachable from all client browsers on the configured port (default **81**).
+
+CORS is enforced with an explicit allowlist. Out of the box the following origins are permitted:
+
+```
+http://172.16.40.27
+http://localhost
+http://172.16.0.50:8050
+http://172.16.0.51
+```
+
+Any browser origin not in this list will have its requests blocked. See [Configuration](/deployment/configuration) for how to update the allowlist.
+
+## Required directory structure
+
+The following directories and files must exist before the server starts (or must be creatable by the process user):
+
+<Tree>
+  <Tree.Folder name="project-root" defaultOpen>
+    <Tree.Folder name="static" defaultOpen>
+      <Tree.File name="logo.png" />
+    </Tree.Folder>
+    <Tree.Folder name="logs">
+      <Tree.File name="chatbot.log" />
+      <Tree.File name="error.log" />
+    </Tree.Folder>
+    <Tree.Folder name="chats">
+      <Tree.File name="YYYY-MM-DD/ (auto-created)" />
+    </Tree.Folder>
+    <Tree.Folder name="app">
+      <Tree.Folder name="prompts">
+        <Tree.File name="system_prompt.py" />
+      </Tree.Folder>
+    </Tree.Folder>
+    <Tree.File name="chatbot.py" />
+    <Tree.File name="chatbot.js" />
+    <Tree.File name="requirements.txt" />
+    <Tree.File name=".env" />
+  </Tree.Folder>
+</Tree>
+
+- **`static/`** — Must be present before startup. Contains `logo.png`, which is served at `/static/logo.png` and referenced by the chat widget.
+- **`logs/`** — Created automatically on first run by the logging setup. Log files rotate at 5 MB with 3 backups; files older than 7 days are deleted.
+- **`chats/`** — Created automatically on startup (`HIST_DIR.mkdir(exist_ok=True)`). Chat history is written here, organized by date.
+
+<Tip>
+  Create `logs/` and `static/` before first run to avoid permission errors:
+
+  ```bash
+  mkdir -p logs static
+  ```
+</Tip>
+
+## Windows vs Linux
+
+Barrett AI runs on both Windows and Linux. The Windows `ProactorEventLoop` is configured automatically:
+
+```python
+if hasattr(asyncio, "WindowsProactorEventLoopPolicy"):
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+```
+
+No manual configuration is needed for Windows. On Linux this block is a no-op.
+
+<Note>
+  Production deployments should prefer Linux for better asyncio performance and compatibility with process managers like `systemd` or `supervisor`.
+</Note>

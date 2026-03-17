@@ -1,0 +1,154 @@
+---
+title: 'Rate limiting & abuse prevention'
+description: 'How Barrett AI protects against misuse with client-side rate limiting and topic restrictions.'
+keywords: ['rate limiting', 'abuse', 'block', 'restricted', 'topics', 'localStorage']
+---
+
+Barrett AI combines server-side topic restrictions enforced by the system prompt with client-side rate limiting enforced in JavaScript. Together they prevent both policy violations and excessive or irrelevant queries.
+
+## Server-side topic restrictions
+
+The system prompt instructs the LLM to refuse certain categories of requests. Topics that are off-limits include:
+
+- Passwords and credential changes
+- Administrator rights or privilege escalation
+- Wi-Fi and router configuration
+- Windows Control Panel settings
+
+When the LLM refuses a request it returns the exact string `"I'm not allowed to discuss this issue."` The client detects this literal phrase to trigger rate limiting.
+
+<Warning>
+  The topic list is defined in the system prompt at session creation time. Changing it requires updating the prompt and restarting the server — there is no runtime configuration UI.
+</Warning>
+
+## Client-side restricted response counter
+
+The frontend tracks how many restricted responses have been received in the current page session:
+
+```javascript
+let restrictedResponseCount = 0;
+```
+
+After every assistant message the client checks whether the response contains the restricted-topic phrase:
+
+```javascript
+if (parsed.response.includes("I'm not allowed to discuss this issue.")) {
+    restrictedResponseCount++;
+    handleRestrictedCount();
+}
+```
+
+`restrictedResponseCount` is a plain in-memory variable. It resets to zero if the page is reloaded — but the localStorage block (described below) survives reloads.
+
+## Block trigger
+
+`handleRestrictedCount()` checks whether the counter has reached the threshold:
+
+```javascript
+function handleRestrictedCount() {
+    if (restrictedResponseCount >= 2) {
+        const blockedUntil = Date.now() + 3 * 60 * 1000; // 3 minutes
+        localStorage.setItem("blocked_until", blockedUntil.toString());
+        applyBlockState(blockedUntil);
+    }
+}
+```
+
+After **2 restricted responses**, a three-minute block is applied. The expiry timestamp is stored in `localStorage` under the key `blocked_until` so the block persists across page refreshes.
+
+## Block state
+
+`applyBlockState()` disables the input field and send button and updates the placeholder text:
+
+```javascript
+function applyBlockState(untilTimestamp) {
+    v.disabled = true;
+    b.disabled = true;
+    v.placeholder = "Please wait 3 minutes. Access locked due to unnecessary queries.";
+    v.style.backgroundColor = "#444";
+    const timeoutDuration = untilTimestamp - Date.now();
+    if (timeoutDuration > 0) {
+        setTimeout(() => {
+            v.disabled = false;
+            b.disabled = false;
+            v.placeholder = "Type your message here...";
+            localStorage.removeItem("blocked_until");
+        }, timeoutDuration);
+    }
+}
+```
+
+<Steps>
+  <Step title="Input locked">
+    Both the textarea (`v`) and the send button (`b`) are set to `disabled`. The textarea background turns dark (`#444`) as a visual indicator.
+  </Step>
+  <Step title="Block persisted">
+    `localStorage.setItem("blocked_until", ...)` stores the Unix timestamp (ms) at which the block expires. On the next page load, the client reads this value and calls `applyBlockState()` again if the timestamp has not yet passed.
+  </Step>
+  <Step title="Auto-unblock">
+    `setTimeout` is scheduled for exactly the remaining duration. When it fires, the inputs are re-enabled and `blocked_until` is removed from localStorage.
+  </Step>
+</Steps>
+
+## Block lifecycle
+
+```
+User receives restricted response
+          │
+          ▼
+  restrictedResponseCount++
+          │
+  count >= 2?
+     │ yes
+     ▼
+  blockedUntil = Date.now() + 180000
+  localStorage.set("blocked_until", blockedUntil)
+  applyBlockState(blockedUntil)
+          │
+   ← 3 minutes pass →
+          │
+  setTimeout fires
+  inputs re-enabled
+  localStorage.remove("blocked_until")
+```
+
+## Persistence across reloads
+
+On page load, the client checks localStorage before rendering the chat UI:
+
+```javascript
+const blockedUntil = localStorage.getItem("blocked_until");
+if (blockedUntil && Date.now() < parseInt(blockedUntil)) {
+    applyBlockState(parseInt(blockedUntil));
+}
+```
+
+If the block has not yet expired, `applyBlockState()` is called immediately with the stored timestamp. The `setTimeout` inside it is set for the remaining duration, so the countdown continues correctly even after a reload.
+
+<Info>
+  The block is scoped to the browser origin. Opening Barrett AI in a different browser or an incognito window starts with a clean state.
+</Info>
+
+## Session inactivity timer
+
+Separate from topic-based blocking, the client enforces a session inactivity timeout that mirrors the server-side three-minute limit:
+
+```javascript
+let inactivityTimer;
+
+function resetInactivityTimer() {
+    clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(async () => {
+        await fetch("/reset-session", { method: "POST", body: JSON.stringify({ session_id: sessionId }) });
+        v.disabled = true;
+        b.disabled = true;
+        v.placeholder = "Session expired. Please refresh the page.";
+    }, 3 * 60 * 1000);
+}
+```
+
+The timer is reset on every message sent. If no message is sent for three minutes the client proactively calls `POST /reset-session` and disables the input — matching the behaviour the user would see if they tried to send a message after the server-side session had already expired.
+
+<Tip>
+  The inactivity timer and the topic-based block are independent. A user can be blocked for restricted queries while still having an active session, or be timed out without ever having sent a restricted query.
+</Tip>

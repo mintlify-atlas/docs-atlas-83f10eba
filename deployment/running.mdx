@@ -1,0 +1,152 @@
+---
+title: "Running the server"
+description: "Start the Barrett AI server and verify it is working correctly."
+---
+
+## Startup sequence
+
+<Steps>
+  <Step title="Install dependencies">
+    Install all Python packages from `requirements.txt`:
+
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+    Use a virtual environment to isolate dependencies:
+
+    ```bash
+    python -m venv .venv
+    source .venv/bin/activate   # Linux / macOS
+    .venv\Scripts\activate      # Windows
+    pip install -r requirements.txt
+    ```
+  </Step>
+
+  <Step title="Set the Cerebras API key">
+    Create a `.env` file in the project root:
+
+    ```bash .env
+    CEREBRAS_API_KEY=your_key_here
+    ```
+
+    Alternatively, export the variable directly in your shell:
+
+    <CodeGroup>
+
+    ```bash Linux / macOS
+    export CEREBRAS_API_KEY=your_key_here
+    ```
+
+    ```powershell Windows
+    $env:CEREBRAS_API_KEY="your_key_here"
+    ```
+
+    </CodeGroup>
+  </Step>
+
+  <Step title="Create required directories">
+    Ensure `static/` exists and contains `logo.png`. The `logs/` and `chats/` directories are created automatically, but you can create them in advance:
+
+    ```bash
+    mkdir -p logs static chats
+    ```
+  </Step>
+
+  <Step title="Start the server">
+    Run `uvicorn` with the host set to `0.0.0.0` and port `81` (matching the widget's default `backend_port`):
+
+    ```bash
+    uvicorn chatbot:app --host 0.0.0.0 --port 81
+    ```
+
+    You should see output similar to:
+
+    ```
+    INFO:     Started server process [PID]
+    INFO:     Waiting for application startup.
+    INFO:     Application started with optimizations
+    INFO:     Uvicorn running on http://0.0.0.0:81 (Press CTRL+C to quit)
+    ```
+  </Step>
+
+  <Step title="Verify the health check">
+    Send a request to the root endpoint:
+
+    ```bash
+    curl http://localhost:81/
+    ```
+
+    A running server returns:
+
+    ```json
+    {"status": "ok", "ip": "<server-ip>", "host": "<hostname>"}
+    ```
+  </Step>
+</Steps>
+
+## Production command
+
+For production, explicitly pass `--workers 1`:
+
+```bash
+uvicorn chatbot:app --host 0.0.0.0 --port 81 --workers 1
+```
+
+<Warning>
+  **Always run with a single worker.** Barrett AI stores session state in an in-memory dictionary (`session_memory_store`). Running multiple workers means each worker has its own copy of this store. A user's second request may be routed to a different worker, which has no record of their session, causing it to be lost.
+</Warning>
+
+<Note>
+  If you need horizontal scaling, you must first migrate session storage to a shared backend (such as Redis) before increasing the worker count.
+</Note>
+
+## Log files
+
+Once the server is running, logs are written to:
+
+| File | Contents |
+|---|---|
+| `logs/chatbot.log` | General application events, request handling, session lifecycle |
+| `logs/error.log` | Error-level events only |
+
+Log files rotate at **5 MB** with **3 backup files** retained. Files older than **7 days** are deleted automatically on startup.
+
+## Chat history
+
+Conversation history is written to the `chats/` directory, organized by date:
+
+```
+chats/
+└── 2026-03-17/
+    └── <session-id>.json
+```
+
+The `chats/` directory is created automatically on startup:
+
+```python chatbot.py
+HIST_DIR = Path("chats")
+HIST_DIR.mkdir(exist_ok=True)
+```
+
+## Graceful shutdown
+
+Press **Ctrl+C** to stop the server. The lifespan shutdown handler runs before the process exits:
+
+```python chatbot.py
+# Shutdown: flushes pending file writes, shuts down thread pool
+for path_str in file_manager.write_queues:
+    if file_manager.write_queues[path_str]:
+        await file_manager.flush_queue(Path(path_str))
+thread_pool.shutdown(wait=True)
+log.info("Application shutdown completed")
+```
+
+This ensures:
+
+- All queued chat history writes are flushed to disk before the process exits
+- The thread pool drains all in-progress I/O tasks before shutting down
+
+<Tip>
+  Do not use `kill -9` (SIGKILL) on the process — it bypasses the shutdown handler and may leave chat history files in a partially written state. Use `kill` (SIGTERM) or Ctrl+C instead.
+</Tip>

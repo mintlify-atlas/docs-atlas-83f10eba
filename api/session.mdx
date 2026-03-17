@@ -1,0 +1,108 @@
+---
+title: "POST /reset-session"
+description: "Clear a session's conversation memory and mark it as expired."
+---
+
+Resets a session by removing all associated server-side state and marking the session ID as expired. After reset, any `/chat` request using the same session ID returns `session_expired: true`.
+
+## Request
+
+**Method:** `POST`  
+**Path:** `/reset-session`  
+**Content-Type:** `application/json`
+
+### Body
+
+<ParamField body="session_id" type="string" required>
+  The session ID to reset. Must be a non-empty string. This is the same ID that was passed to `/chat` during the session.
+</ParamField>
+
+## Response
+
+### Success — 200
+
+<ResponseField name="status" type="string">
+  Always `"success"` when the session was found and cleared.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Confirmation message: `"Session {session_id} memory cleared"`
+</ResponseField>
+
+```json
+{
+  "status": "success",
+  "message": "Session session_abc123 memory cleared"
+}
+```
+
+<Note>
+If the `session_id` does not exist in any of the server-side stores (for example, it was already expired or never used), the endpoint still returns `200`. It is safe to call reset on a session that was never active.
+</Note>
+
+## Error responses
+
+| Status | Detail | Cause |
+|--------|--------|-------|
+| `400` | `Missing session_id` | `session_id` field is absent or blank in the request body |
+| `400` | `Invalid JSON payload` | Request body is not valid JSON |
+
+## What reset does
+
+Calling `/reset-session` performs four operations on the server:
+
+1. Adds the `session_id` to `expired_sessions` — subsequent `/chat` calls with this ID immediately return `session_expired: true`
+2. Removes the entry from `session_memory_store` — the LangChain `ConversationBufferWindowMemory` for this session is discarded
+3. Removes the entry from `session_last_active` — the inactivity timestamp is cleared
+4. Removes the entry from `session_usernames` — the stored username is deleted
+
+```python chatbot.py
+expired_sessions.add(session_id)
+session_memory_store.pop(session_id, None)
+session_last_active.pop(session_id, None)
+session_usernames.pop(session_id, None)
+```
+
+## Use cases
+
+- **New chat button**: The widget calls `/reset-session` when the user clicks the "New Chat" button, then generates a fresh session ID for the next conversation.
+- **Page unload**: The widget calls `/reset-session` in a `beforeunload` handler to clean up server memory when the user navigates away.
+- **Inactivity timeout**: Sessions expire automatically after 3 minutes of inactivity via a background cleanup task. Calling `/reset-session` explicitly before that timeout frees memory immediately.
+
+## After reset — generate a new session ID
+
+<Warning>
+After calling `/reset-session`, do not reuse the same `session_id`. Any `/chat` request with the reset ID will return `{"response": "Session expired; please refresh.", "session_expired": true}`. The client must generate a new session ID to start a fresh conversation.
+</Warning>
+
+## Example
+
+```bash
+curl -X POST http://172.16.0.50:81/reset-session \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": "session_abc123"}'
+```
+
+Expected response:
+
+```json
+{
+  "status": "success",
+  "message": "Session session_abc123 memory cleared"
+}
+```
+
+Verify the session is expired by immediately calling `/chat` with the same ID:
+
+```bash
+curl -X POST http://172.16.0.50:81/chat \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": "session_abc123", "message": "Hello"}'
+```
+
+```json
+{
+  "response": "Session expired; please refresh.",
+  "session_expired": true
+}
+```
