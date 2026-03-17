@@ -1,0 +1,89 @@
+{
+  "projectType": "saas",
+  "projectName": "Barrett AI Chatbot",
+  "projectDescription": "Barrett AI is an IT helpdesk chatbot for Barrett Hodgson Pakistan, powered by LangChain and Cerebras LLM, providing a FastAPI backend with a JavaScript embeddable widget for real-time streaming IT support.",
+  "theme": "almond",
+  "primaryColor": "#ff173a",
+  "lightColor": "#ff4d6a",
+  "darkColor": "#c2003a",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart"]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/session-management",
+              "features/streaming-responses",
+              "features/chat-history",
+              "features/rate-limiting"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/requirements",
+              "deployment/configuration",
+              "deployment/running"
+            ]
+          },
+          {
+            "group": "Widget Integration",
+            "pages": [
+              "widget/embedding",
+              "widget/customization"
+            ]
+          },
+          {
+            "group": "Testing & Performance",
+            "pages": [
+              "testing/unit-tests",
+              "testing/load-testing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/overview",
+              "api/chat",
+              "api/session",
+              "api/ip-management"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Real-time streaming chat responses via FastAPI StreamingResponse",
+    "Session-based conversation memory using LangChain ConversationBufferWindowMemory",
+    "LLM-powered IT support with Cerebras llama-3.3-70b model",
+    "Embeddable JavaScript chat widget for any web page",
+    "Automatic session expiry and cleanup after 3 minutes of inactivity",
+    "Chat history persistence to JSONL files organized by date and user",
+    "LRU cache for hostname lookups and in-memory LLM response caching",
+    "Abuse prevention with client-side rate limiting and block state",
+    "Load testing support via Locust",
+    "Rotating file logging with automatic old log cleanup"
+  ],
+  "publicApiSurface": [
+    "GET / — Health check returning client IP and hostname",
+    "GET /check-ip — Check if client IP is already stored",
+    "POST /store-ip — Store a client IP address",
+    "POST /reset-session — Clear session memory and mark session as expired",
+    "POST /chat — Send a message and receive a streaming or JSON response",
+    "StreamingHandler — LangChain callback handler for token streaming",
+    "FileOperationManager — Async batched file write manager",
+    "LRUCache — Thread-safe in-memory LRU cache"
+  ]
+}
